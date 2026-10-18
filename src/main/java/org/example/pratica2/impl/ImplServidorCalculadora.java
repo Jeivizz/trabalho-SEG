@@ -1,64 +1,84 @@
 package org.example.pratica2.impl;
 
+import org.example.pratica2.SegurancaUtils;
+
 import java.io.IOException;
 import java.io.PrintStream;
 import java.net.Socket;
+import java.security.KeyPair;
+import java.security.PublicKey;
 import java.util.Scanner;
 
 public class ImplServidorCalculadora implements Runnable {
     private Socket socketCliente;
     private String nomeServidor;
-    private Scanner entrada = null;
-    private PrintStream saida = null;
+    private KeyPair chavesRSA;
 
-    public ImplServidorCalculadora(Socket cliente, String nomeServidor) {
+    public ImplServidorCalculadora(Socket cliente, String nomeServidor, KeyPair chaves) {
         this.socketCliente = cliente;
         this.nomeServidor = nomeServidor;
+        this.chavesRSA = chaves;
     }
 
     @Override
     public void run() {
-        try {
-            entrada = new Scanner(socketCliente.getInputStream());
-            saida = new PrintStream(socketCliente.getOutputStream());
+        try (Scanner entrada = new Scanner(socketCliente.getInputStream());
+             PrintStream saida = new PrintStream(socketCliente.getOutputStream())) {
 
             if (entrada.hasNextLine()) {
-                String requisicao = entrada.nextLine();
-                String[] partes = requisicao.split(" "); // Divide o comando em um array de strings
-                // Ex: partes[0] = "SOMA", partes[1] = "5", partes[2] = "10"
+                String pacoteSeguro = entrada.nextLine();
                 try {
+                    String payload = SegurancaUtils.decriptarEValidarMensagem(pacoteSeguro, chavesRSA.getPrivate());
+
+                    // Formato: "SOMA 10 20 | CHAVE_PUB_CLIENTE"
+                    String[] partesPayload = payload.split("\\|");
+                    String dadosCalculo = partesPayload[0].trim();
+                    PublicKey clientePubKey = SegurancaUtils.stringToPublicKey(partesPayload[1].trim());
+
+                    String[] partes = dadosCalculo.split(" ");
                     String operacao = partes[0];
-                    // Iniciar as variáveis com as partes numéricas do comando
+
+                    if (!operacao.equals("SOMA") && !operacao.equals("SUBTRACAO") &&
+                            !operacao.equals("MULTIPLICACAO") && !operacao.equals("DIVISAO")) {
+                        throw new IllegalArgumentException("Erro na entrada de dados. Tente outra vez!");
+                    }
+
                     double a = Double.parseDouble(partes[1]);
                     double b = Double.parseDouble(partes[2]);
-                    // Iniciar o resultado em 0
-                    double resultado = 0;
+                    double result = 0;
 
                     switch (operacao) {
-                        case "SOMA": resultado = a + b; break;
-                        case "SUBTRACAO": resultado = a - b; break;
-                        case "MULTIPLICACAO": resultado = a * b; break;
+                        case "SOMA": result = a + b; break;
+                        case "SUBTRACAO": result = a - b; break;
+                        case "MULTIPLICACAO": result = a * b; break;
                         case "DIVISAO":
-                            if (b == 0) throw new ArithmeticException("Divisão por zero"); // Tratamento para divisões por zero
-                            resultado = a / b;
-                            break;
-                        default:
-                            throw new IllegalArgumentException("Operação desconhecida"); // Tratamento para operações fora do escopo definido
+                            if (b == 0) throw new IllegalArgumentException("Erro na entrada de dados. Tente outra vez!");
+                            result = a / b; break;
                     }
-                    saida.println("[" + nomeServidor + "] Resultado: " + resultado);
 
-                } catch (NumberFormatException | ArrayIndexOutOfBoundsException e) { // Tratativa específica para Entrada inválida
-                    saida.println("[" + nomeServidor + "] [ERRO]: Entrada inválida. Formato esperado: OPERACAO N1 N2");
-                } catch (ArithmeticException | IllegalArgumentException e) {
-                    saida.println("[" + nomeServidor + "] [ERRO]: " + e.getMessage());
+                    // Envia resposta cifrada para o cliente
+                    String msgResposta = "[" + nomeServidor + "] Processado com segurança. Resultado: " + result;
+                    saida.println(SegurancaUtils.criarMensagemSegura(msgResposta, clientePubKey));
+
+                } catch (SecurityException e) {
+                    System.out.println("[" + nomeServidor + "] Falha de integridade barrada: " + e.getMessage());
+                    // Em caso de falha de HMAC, o servidor não responde ou encerra a conexão.
+                } catch (Exception e) {
+                    // Para erros de entrada (ex: NumberFormatException, ArrayIndexOutOfBounds), tenta avisar o cliente
+                    try {
+                        String[] partesPayload = SegurancaUtils.decriptarEValidarMensagem(pacoteSeguro, chavesRSA.getPrivate()).split("\\|");
+                        if(partesPayload.length > 1) {
+                            PublicKey clientePubKey = SegurancaUtils.stringToPublicKey(partesPayload[1].trim());
+                            String erroMsg = "Erro na entrada de dados. Tente outra vez!";
+                            saida.println(SegurancaUtils.criarMensagemSegura(erroMsg, clientePubKey));
+                        }
+                    } catch (Exception ex) {
+                        // Se nem a chave do cliente puder ser lida, ignora
+                    }
                 }
             }
-            entrada.close();
-            saida.close();
-            socketCliente.close();
-
-        } catch (IOException e) {
-            System.out.println("Erro na calculadora: " + e.getMessage());
+        } catch (Exception e) {
+            // Erro de IO ao fechar conexao
         }
     }
 }

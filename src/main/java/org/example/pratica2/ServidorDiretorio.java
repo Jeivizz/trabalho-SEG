@@ -5,24 +5,38 @@ import java.io.IOException;
 import java.net.ServerSocket;
 import java.net.Socket;
 
+
+import java.security.KeyPair;
+
+import java.util.ArrayList;
+import java.util.List;
+
+
+
 public class ServidorDiretorio {
     int porta;
+    public static KeyPair chavesRSA;
+    public static List<String> servidores = new ArrayList<>();
+    public static int indiceRoundRobin = 0;
 
     public ServidorDiretorio(int porta) {
         this.porta = porta;
-        this.rodar(); // Roda Servidor Diretório ao ser instanciado
+        try {
+            chavesRSA = SegurancaUtils.gerarParChavesRSA();
+            SegurancaUtils.salvarChavePublica("dir_pub.key", chavesRSA.getPublic());
+        } catch (Exception e) {
+            e.printStackTrace();
+        }
+        this.rodar();
     }
 
     private void rodar() {
         try {
-            ServerSocket socketServidor = new ServerSocket(porta); // Define o Server Socket do servidor Diretório com sua porta
-            System.out.println("Servidor de Diretório rodando na porta [" + socketServidor.getLocalPort() + "]");
-            while(true) {
+            ServerSocket socketServidor = new ServerSocket(porta);
+            System.out.println("[Diretorio] Rodando seguro na porta " + socketServidor.getLocalPort());
+            while (true) {
                 Socket cliente = socketServidor.accept();
-                ImplServidorDiretorio servidor = new ImplServidorDiretorio(cliente);
-                // Define e inicia a Thread
-                Thread t = new Thread(servidor);
-                t.start();
+                new Thread(new ImplServidorDiretorio(cliente)).start();
             }
         } catch (IOException e) {
             e.printStackTrace();
@@ -33,3 +47,4 @@ public class ServidorDiretorio {
         new ServidorDiretorio(9000);
     }
 }
+
