@@ -28,7 +28,8 @@ public class Cliente {
     }
 
     public static void main(String[] args) throws InterruptedException {
-        System.out.println("=== CASO 2: Chamada com Load Balancing (AES+HMAC) ===");
+
+        System.out.println("=== CASO 1 e CASO 2: Descoberta de Servico e Chamada com Load Balancing (AES+HMAC) ===");
         new Cliente("C1", "SOMA", "10 20", false);
         Thread.sleep(100);
         new Cliente("C2", "MULTIPLICACAO", "5 4", false);

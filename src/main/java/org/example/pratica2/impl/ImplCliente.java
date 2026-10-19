@@ -1,9 +1,5 @@
 package org.example.pratica2.impl;
 
-import org.example.pratica2.SegurancaUtils;
-import org.example.pratica2.ServidorCalculadora;
-
-import java.io.IOException;
 import java.io.PrintStream;
 import java.net.ConnectException;
 import java.net.Socket;
@@ -59,20 +55,20 @@ public class ImplCliente implements Runnable {
                     String respostaDecifrada = SegurancaUtils.decriptarEValidarMensagem(respostaCifrada, chavesCliente.getPrivate());
 
                     synchronized (System.out) {
-                        System.out.println("[" + idCliente + "] Operação [" + operacao + " " + entradaBruta + "] enviada com segurança para " + endereco);
+                        System.out.println("[" + idCliente + "] Operação [" + operacao + " " + entradaBruta + "] enviada com segurança para [" + endereco + "]");
                         System.out.println("[" + idCliente + "] Resposta decifrada: " + respostaDecifrada);
                         System.out.println("--------------------------------------------------");
                     }
                 } else {
                     synchronized (System.out) {
-                        System.out.println("[" + idCliente + "] ERRO: Pacote descartado pelo servidor (HMAC inválido/Corrompido).");
+                        System.out.println("[" + idCliente + "] [ERRO]: Pacote descartado pelo servidor (HMAC inválido/Corrompido).");
                         System.out.println("--------------------------------------------------");
                     }
                 }
             }
         } catch (ConnectException e) {
             synchronized (System.out) {
-                System.out.println("[" + idCliente + "] ERRO: Servidor inativo/indisponível em " + endereco);
+                System.out.println("[" + idCliente + "] [ERRO]: Servidor inativo/indisponível em " + endereco);
                 System.out.println("--------------------------------------------------");
             }
         } catch (Exception e) {
@@ -93,8 +89,15 @@ public class ImplCliente implements Runnable {
 
             if (entrada.hasNextLine()) {
                 String respostaCifrada = entrada.nextLine();
-                return SegurancaUtils.decriptarEValidarMensagem(respostaCifrada, chavesCliente.getPrivate());
+                String respostaDecifrada = SegurancaUtils.decriptarEValidarMensagem(respostaCifrada, chavesCliente.getPrivate());
+
+                synchronized (System.out) {
+                    System.out.println("[" + idCliente + "] Consulta cifrada ao Diretório obteve endereço autenticado: [" + respostaDecifrada.split("\\|")[0] + "]");
+                }
+
+                return respostaDecifrada;
             }
+
             return null;
         } catch (Exception e) {
             return null;

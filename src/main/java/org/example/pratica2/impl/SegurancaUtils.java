@@ -1,4 +1,4 @@
-package org.example.pratica2;
+package org.example.pratica2.impl;
 
 import javax.crypto.Cipher;
 import javax.crypto.KeyGenerator;

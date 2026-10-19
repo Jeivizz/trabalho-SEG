@@ -1,8 +1,5 @@
 package org.example.pratica2.impl;
 
-import org.example.pratica2.SegurancaUtils;
-
-import java.io.IOException;
 import java.io.PrintStream;
 import java.net.Socket;
 import java.security.KeyPair;

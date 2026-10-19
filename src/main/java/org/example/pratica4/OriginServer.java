@@ -1,14 +1,17 @@
 package org.example.pratica4;
 
 import org.example.pratica4.impl.ImplOriginServer;
+import org.example.pratica4.impl.SegurancaUtils;
 
 import java.io.IOException;
-import java.io.PrintStream;
+import java.io.PrintWriter;
 import java.net.ServerSocket;
 import java.net.Socket;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.Paths;
+import java.security.KeyPair;
+import java.security.PublicKey;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Scanner;
@@ -16,80 +19,78 @@ import java.util.Scanner;
 public class OriginServer {
     int porta;
     public static List<String> logs = new ArrayList<>();
-
-    // cada Edge escuta numa porta. Origin vai ler as portas para fazer a Invalidação
     private static final int[] PORTAS_EDGES = {8001, 8002, 8003};
-
-    // Caminho para leitura diretamente no disco
     public static final Path DIR_DADOS = Paths.get("origin_data");
+    public static KeyPair KEYPAIR;
 
-    // Ao instanciar OriginServer, automaticamente vai rodar os métodos de arquivos e validação
-    public OriginServer(int porta) {
+    // Construtor OriginServer e roda seus métodos automaticamente ao ser instanciado
+    public OriginServer(int porta) throws Exception {
         this.porta = porta;
-        criarArquivosSeNaoExistirem();
+        KEYPAIR = SegurancaUtils.carregarOuCriarKeyPair("origin");
+        prepararArquivos();
         iniciarConsoleInvalidacao();
-        this.rodar();
+        rodar();
     }
 
-
-    private static void criarArquivosSeNaoExistirem() {
+    // Gera os arquivos no disco. Reseta em toda execução para evitar erro na simulação
+    private static void prepararArquivos() {
         try {
             Files.createDirectories(DIR_DADOS);
             for (int i = 1; i <= 1000; i++) {
-                Path p = DIR_DADOS.resolve("arquivo" + i + ".ext");
-                // Sempre escreve versao 1, mesmo que exista. (Apenas para evitar erro caso execute de novo)
-
-                Files.writeString(p, "Conteudo bruto mestre do arquivo" + i
-                        + ".ext versao 1 armazenado no Origin Server.");
+                Files.writeString(DIR_DADOS.resolve("arquivo" + i + ".ext"),
+                        "Conteudo bruto mestre do arquivo" + i
+                                + ".ext versao 1 armazenado no Origin Server.");
             }
-            System.out.println("[Origin] 1000 arquivos resetados para versao 1 em "
-                    + DIR_DADOS.toAbsolutePath());
+            System.out.println("[Origin] 1000 arquivos resetados em " + DIR_DADOS.toAbsolutePath());
         } catch (IOException e) {
-            throw new RuntimeException("Nao consegui preparar a pasta de dados", e);
+            throw new RuntimeException(e);
         }
     }
 
-    // fica lendo o teclado pra simular a alteracao de conteudo no origin.
+    // console no terminal de OriginServer para o caso de INVALIDATE (teste: arquivo30.ext)
     private void iniciarConsoleInvalidacao() {
         Thread t = new Thread(() -> {
             Scanner teclado = new Scanner(System.in);
-            System.out.println("Origem pronta. Digite o nome de um arquivo (ex: arquivo30.ext)");
-            System.out.println("pra atualizar o conteudo e invalidar nos Edges.");
-
+            System.out.println("[Origin] digite arquivo30.ext (ou outro) pra atualizar + invalidar:");
             while (teclado.hasNextLine()) {
-                String arquivo = teclado.nextLine().trim();
-                if (arquivo.isEmpty()) continue;
-
-                // atualiza o arquivo no disco pra versao 2. Sem isso o cache miss ia devolver o mesmo texto
-                String novo = "Conteudo bruto mestre do " + arquivo
-                        + " versao 2 (ATUALIZADO) armazenado no Origin Server.";
+                String arq = teclado.nextLine().trim();
+                if (arq.isEmpty()) continue;
                 try {
-                    Files.writeString(DIR_DADOS.resolve(arquivo), novo);
-                    System.out.println("[Origin] " + arquivo + " atualizado no disco (versao 2).");
+                    Files.writeString(DIR_DADOS.resolve(arq),
+                            "Conteudo bruto mestre do " + arq
+                                    + " versao 2 (ATUALIZADO) armazenado no Origin Server.");
+                    registrar("[Origin] atualizado no disco: " + arq);
                 } catch (IOException e) {
-                    System.out.println("[Origin] Falha ao atualizar " + arquivo + ": " + e.getMessage());
+                    System.out.println("[Origin] falha ao atualizar " + arq);
+                    continue;
                 }
 
-                // manda INVALIDATE pra cada Edge (protocolo com barra, igual ao PDF)
-                String comando = "INVALIDATE /" + arquivo;
-                for (int portaEdge : PORTAS_EDGES) {
-                    try (Socket s = new Socket("127.0.0.1", portaEdge);
-                         PrintStream out = new PrintStream(s.getOutputStream())) {
-                        out.println(comando);
-                        registrar("[Origin] enviado: " + comando + " -> Edge " + portaEdge);
-                    } catch (IOException e) {
-                        System.out.println("[Origin] Edge " + portaEdge + " nao respondeu.");
+                // Envia a mensagem segura do INVALIDATE aos EdgeServers
+                String comando = "INVALIDATE /" + arq;
+                for (int p : PORTAS_EDGES) {
+                    // Tenta com todos os EdgeServers
+                    try (Socket s = new Socket("127.0.0.1", p);
+                         PrintWriter out = new PrintWriter(s.getOutputStream(), true)) {
+                        PublicKey pubEdge = SegurancaUtils.carregarPublica("edge_" + p);
+                        var ctx = SegurancaUtils.criarMensagemSegura(comando, pubEdge);
+                        out.println(ctx.pacote);
+                        registrar("[Origin] INVALIDATE cifrado enviado ao Edge " + p);
+                    } catch (Exception e) {
+                        // Erro de Edge server Indisponível
+                        System.out.println("[Origin] Edge " + p + " indisponivel");
                     }
                 }
             }
         });
+        // Vai rodar em segundo plano enquanto houver outras threads rodando
         t.setDaemon(true);
         t.start();
     }
 
+    // Inicializa o funcionamento assim que o objeto OriginServer é instanciado
     private void rodar() {
         try (ServerSocket servidor = new ServerSocket(porta)) {
-            System.out.println("Origin Server (TCP) na porta [" + porta + "]");
+            System.out.println("[Origin] TCP escutando na porta " + porta);
             while (true) {
                 Socket cliente = servidor.accept();
                 new Thread(new ImplOriginServer(cliente)).start();
@@ -99,15 +100,13 @@ public class OriginServer {
         }
     }
 
-    // Função para não repetir synchronized
+    // Funcção auxiliar para registrar o log
     public static void registrar(String linha) {
-        synchronized (logs) {
-            logs.add(linha);
-        }
+        synchronized (logs) { logs.add(linha); }
         System.out.println(linha);
     }
 
-    public static void main(String[] args) {
+    public static void main(String[] args) throws Exception {
         new OriginServer(8000);
     }
 }

@@ -1,14 +1,11 @@
 package org.example.pratica2.impl;
 
-import org.example.pratica2.SegurancaUtils;
 import org.example.pratica2.ServidorDiretorio;
 
 import java.io.IOException;
 import java.io.PrintStream;
 import java.net.Socket;
 import java.security.PublicKey;
-import java.util.ArrayList;
-import java.util.List;
 import java.util.Scanner;
 
 public class ImplServidorDiretorio implements Runnable {
@@ -52,7 +49,7 @@ public class ImplServidorDiretorio implements Runnable {
                                 ServidorDiretorio.servidores.add(registroCompleto);
                             }
                         }
-                        System.out.println("[Diretorio] Serviço autenticado e registrado: " + endereco);
+                        System.out.println("[Diretorio] Serviço autenticado e registrado: [" + endereco + "]");
 
                     } else if (comando.equals("/DESCOBRIR")) {
                         String resposta;

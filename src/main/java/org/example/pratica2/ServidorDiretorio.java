@@ -1,5 +1,6 @@
 package org.example.pratica2;
 import org.example.pratica2.impl.ImplServidorDiretorio;
+import org.example.pratica2.impl.SegurancaUtils;
 
 import java.io.IOException;
 import java.net.ServerSocket;
@@ -33,7 +34,7 @@ public class ServidorDiretorio {
     private void rodar() {
         try {
             ServerSocket socketServidor = new ServerSocket(porta);
-            System.out.println("[Diretorio] Rodando seguro na porta " + socketServidor.getLocalPort());
+            System.out.println("[Diretorio] Rodando seguro na porta [" + socketServidor.getLocalPort() + "]");
             while (true) {
                 Socket cliente = socketServidor.accept();
                 new Thread(new ImplServidorDiretorio(cliente)).start();

@@ -1,6 +1,7 @@
 package org.example.pratica2;
 
 import org.example.pratica2.impl.ImplServidorCalculadora;
+import org.example.pratica2.impl.SegurancaUtils;
 
 import java.io.PrintStream;
 import java.net.ServerSocket;
@@ -46,7 +47,7 @@ public class ServidorCalculadora {
     private void rodar() {
         try {
             ServerSocket socketServidor = new ServerSocket(porta);
-            System.out.println("[" + nome + "] Rodando seguro na porta " + socketServidor.getLocalPort());
+            System.out.println("[" + nome + "] Rodando seguro na porta [" + socketServidor.getLocalPort() + "]");
             while (true) {
                 Socket cliente = socketServidor.accept();
                 new Thread(new ImplServidorCalculadora(cliente, nome, chavesRSA)).start();
