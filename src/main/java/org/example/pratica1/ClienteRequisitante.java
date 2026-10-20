@@ -12,24 +12,14 @@ import java.util.Map;
 import java.util.TreeMap;
 import java.util.concurrent.ConcurrentHashMap;
 
-// QUESTÃO 1 (Segurança) - Cliente requisitante (C1, C2, C3...).
-//
-// No construtor faz o HANDSHAKE (RSA) e obtém as chaves AES/HMAC.
-// Tudo que envia é cifrado + HMAC; tudo que recebe tem o HMAC validado
-// ANTES de ser interpretado. Pacotes inválidos são descartados e registrados.
-//
-// Mantém a thread ouvinte (precisa receber NOTIFY a qualquer momento) e o
-// cache local atualizado por RESOLVIDO e NOTIFY.
-//
-// Comandos de teste extras (para o Caso 3):
-//   adulterar-hmac <nome>   envia RESOLVE com 1 bit do HMAC alterado
-//   adulterar-cifra <nome>  envia RESOLVE com 1 bit do texto cifrado alterado
+// Cliente requisitante: estabelece sessão cifrada com o DNS via handshake,
+// registra-se para receber NOTIFY e mantém cache local dos nomes resolvidos.
 public class ClienteRequisitante {
 
     private final String nome;
     private final DatagramSocket socket;
     private final InetSocketAddress servidor;
-    private final Sessao sessao;
+    private final Sessao sessao; // chaves AES/HMAC negociadas no handshake
     private final Map<String, String> cache = new ConcurrentHashMap<>();
     private volatile boolean ativo = true;
 
@@ -38,8 +28,7 @@ public class ClienteRequisitante {
         DatagramSocket s = new DatagramSocket();
         this.servidor = new InetSocketAddress(InetAddress.getByName(host), portaServidor);
         try {
-            // Handshake ANTES de iniciar a thread ouvinte: ele usa o mesmo socket
-            // de forma síncrona (com timeout e novas tentativas).
+            // Handshake com papel REQUISITANTE sem segredo, só registrador tem
             this.sessao = Handshake.estabelecer(s, servidor, Protocolo.PAPEL_REQUISITANTE, nome, "");
         } catch (IOException e) {
             s.close();
@@ -47,11 +36,12 @@ public class ClienteRequisitante {
         }
         this.socket = s;
 
+        // Thread que escuta respostas/notificações cifradas do DNS
         Thread ouvinte = new Thread(this::escutar, nome + "-ouvinte");
         ouvinte.setDaemon(true);
         ouvinte.start();
 
-        enviarSeguro("REGISTER"); // entra na lista de quem recebe NOTIFY
+        enviarSeguro("REGISTER"); // passa a receber NOTIFY
     }
 
     public void resolver(String nomeServidor) {
@@ -62,34 +52,24 @@ public class ClienteRequisitante {
         return new TreeMap<>(cache);
     }
 
-    // Encerra o cliente apenas fechando o socket.
-    // (O BYE foi removido do escopo; a sessão no servidor fica na memória
-    // até o processo do DNS terminar, o que é aceitável para o trabalho.)
     public void fechar() {
         ativo = false;
         socket.close();
     }
 
-    // ------------------------------------------------------------------
-    // Caso 3b: método PÚBLICO usado pela Main para simular um atacante.
-    // Altera 1 bit do HMAC do pacote, DEPOIS de ele ter sido montado
-    // corretamente. O servidor deve detectar a falha de integridade e
-    // descartar o pacote sem processar (exigência do PDF).
-    // ------------------------------------------------------------------
+    // Métodos de adulteração para o Caso 3 (falha de integridade) 
+
+    // Altera 1 bit do HMAC -> servidor deve descartar por HMAC inválido
     public void adulterarHmac(String nomeServidor) {
         enviarAdulterado("RESOLVE " + nomeServidor, false);
     }
 
-    // Variante opcional do Caso 3b: altera 1 bit do TEXTO CIFRADO.
-    // O HMAC deixa de bater porque o corpo mudou.
+    // Altera 1 bit do texto cifrado -> HMAC não bate -> servidor descarta
     public void adulterarCifra(String nomeServidor) {
         enviarAdulterado("RESOLVE " + nomeServidor, true);
     }
 
-    // ------------------------------------------------------------------
-    // Envio
-    // ------------------------------------------------------------------
-
+    // Envia mensagem normal, cifrada na sessão
     private void enviarSeguro(String claro) {
         String pacote = sessao.empacotar(claro);
         Log.info(nome, "ENVIANDO [" + sessao.rotulo() + "] " + Sessao.resumo(pacote)
@@ -97,13 +77,13 @@ public class ClienteRequisitante {
         enviarBruto(pacote);
     }
 
-    // Monta o pacote corretamente e depois altera 1 bit do campo escolhido.
-    // Formato do pacote (5 campos): DATA|<id>|<iv>|<cifrado>|<hmac>
+    // Monta o pacote, corrompe 1 bit (no cifrado ou no HMAC) e envia
     private void enviarAdulterado(String claro, boolean adulterarCifra) {
         String[] p = sessao.empacotar(claro).split("\\|", -1);
-        int campo = adulterarCifra ? 3 : 4; // 3 = texto cifrado, 4 = HMAC
+        // Layout: DATA|id|iv|cifrado|hmac -> índices 3 (cifrado) e 4 (hmac)
+        int campo = adulterarCifra ? 3 : 4;
         byte[] bytes = CriptoUtil.deb64(p[campo]);
-        bytes[0] ^= 0x01; // inverte 1 bit
+        bytes[0] ^= 0x01; // XOR de 1 bit
         p[campo] = CriptoUtil.b64(bytes);
         Log.info(nome, "ENVIANDO PACOTE ADULTERADO (1 bit alterado no "
                 + (adulterarCifra ? "texto cifrado" : "HMAC") + ") | claro original=\"" + claro
@@ -120,10 +100,7 @@ public class ClienteRequisitante {
         }
     }
 
-    // ------------------------------------------------------------------
-    // Recepção (thread ouvinte)
-    // ------------------------------------------------------------------
-
+    // Loop da thread ouvinte: só aceita DATA|... e valida HMAC
     private void escutar() {
         while (ativo) {
             DatagramPacket pacote = new DatagramPacket(
@@ -136,26 +113,29 @@ public class ClienteRequisitante {
             String texto = new String(pacote.getData(), 0, pacote.getLength(),
                     StandardCharsets.UTF_8).trim();
             if (!texto.startsWith("DATA|")) {
-                continue; // ignora sobras do handshake
+                continue; // ignora PUBKEY residual etc....
             }
             try {
-                String claro = sessao.abrir(texto); // valida HMAC, depois decifra
+                String claro = sessao.abrir(texto); // valida HMAC e decifra
                 Log.info(nome, "RECEBIDO [" + sessao.rotulo() + "] HMAC=OK "
                         + Sessao.resumo(texto) + " | claro=\"" + claro + "\"");
                 interpretar(claro);
             } catch (FalhaIntegridadeException e) {
+                // Defesa do cliente pacote do DNS com HMAC inválido é descartado
                 Log.info(nome, "FALHA DE INTEGRIDADE: " + e.getMessage()
                         + " -> pacote DESCARTADO");
             }
         }
     }
 
+    // Interpreta o texto claro recebido do DNS
     private void interpretar(String texto) {
         String[] t = texto.split("\\s+");
         if (t[0].equals("RESOLVIDO") && t.length == 3) {
             cache.put(t[1], t[2]);
             Log.info(nome, "Resposta do DNS (validada): " + t[1] + " -> " + t[2]);
         } else if (t[0].equals("NOTIFY") && t.length == 3) {
+            // Binding dinâmico atualiza o cache local
             String antigo = cache.put(t[1], t[2]);
             Log.info(nome, "*** NOTIFICAÇÃO validada: " + t[1] + " mudou"
                     + (antigo != null ? " de " + antigo : " (nao estava no cache)")
@@ -165,6 +145,7 @@ public class ClienteRequisitante {
         } else if (t[0].equals("DESREGISTRADO")) {
             Log.info(nome, "Desregistrado; não receberá mais atualizacoes");
         } else if (t[0].equals("ERRO")) {
+            // Caso 3a: erro de entrada -> imprime a mensagem padronizada do PDF
             if (Protocolo.ehErroDeEntrada(texto)) {
                 Log.info(nome, Protocolo.MSG_ERRO_ENTRADA
                         + " (servidor: " + texto.substring(4).trim() + ")");
@@ -176,10 +157,7 @@ public class ClienteRequisitante {
         }
     }
 
-    // ------------------------------------------------------------------
-    // Console (uso individual: java ClienteRequisitante C1 [host] [porta])
-    // ------------------------------------------------------------------
-
+    // Permite rodar o cliente como processo independente (requisito global)
     public static void main(String[] args) throws Exception {
         String nome = args.length > 0 ? args[0] : "C1";
         String host = args.length > 1 ? args[1] : "localhost";

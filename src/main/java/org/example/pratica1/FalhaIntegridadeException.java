@@ -1,9 +1,9 @@
 package org.example.pratica1;
 
-// Lançada quando um pacote recebido NÃO pode ser aceito: HMAC inválido
-// (adulterado ou chave errada), formato malformado ou número de sequência
-// repetido (replay). Quem captura esta exceção DESCARTA o pacote sem
-// processá-lo e registra a falha no log (exigência do Caso 3).
+// Exceção lançada quando um pacote recebido NÃO pode ser aceito:
+// HMAC inválido, formato malformado ou IV com tamanho errado
+// Quem captura descarta o pacote sem processar e loga a falha
+// É "checked" de propósito: força o chamador a tratar
 public class FalhaIntegridadeException extends Exception {
 
     public FalhaIntegridadeException(String mensagem) {

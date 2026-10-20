@@ -13,37 +13,25 @@ import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.regex.Pattern;
 
-// QUESTÃO 1 (Segurança) - Mini-DNS UDP com criptografia híbrida.
-//
-// Datagramas aceitos em claro (só o handshake):
-//   HELLO                -> responde PUBKEY|<chave pública RSA>
-//   KEYEX|<RSA(chaves)>  -> cria a sessão e responde KEYOK (já cifrado)
-// Qualquer outro datagrama precisa ser DATA|... válido, senão é DESCARTADO.
-//
-// Mensagens de aplicação (dentro do DATA, já decifradas):
-//   REGISTER / UNREGISTER      |  RESOLVE <nome>  |  UPDATE <nome> <ip>
-//   Respostas: REGISTRADO, DESREGISTRADO, RESOLVIDO <nome> <ip>,
-//              ATUALIZADO <nome> <ip>, NOTIFY <nome> <ip>, ERRO <CODIGO> ...
 public class DnsServer {
 
-    public static final int PORTA_PADRAO = 5300; // 5353 é usada pelo mDNS em muitos SOs
-    public static final String SEGREDO_PADRAO = "registrador123";
-    private static final int MAX_SESSOES = 1000; // evita exaustão de memória por handshakes falsos
+    public static final int PORTA_PADRAO = 5300; // evita conflito com mDNS 5353 (ja vi 4 pessoas com o mesmo erro XD)
+    public static final String SEGREDO_PADRAO = "registrador123"; // só o registrador conhece
+    private static final int MAX_SESSOES = 1000; // mitigação simples de DoS
 
+    // Validações de entrada
     private static final Pattern IPV4 = Pattern.compile(
             "^((25[0-5]|2[0-4]\\d|1\\d\\d|[1-9]?\\d)\\.){3}(25[0-5]|2[0-4]\\d|1\\d\\d|[1-9]?\\d)$");
     private static final Pattern NOME_VALIDO = Pattern.compile("^servidor[1-9][0-9]{0,8}$");
     private static final Pattern NOME_CLIENTE = Pattern.compile("^[A-Za-z0-9_-]{1,16}$");
 
     private final DatagramSocket socket;
-    private final KeyPair parRsa;              // chave privada NUNCA sai deste processo
-    private final String chavePublicaB64;
-    private final byte[] segredoRegistrador;
+    private final KeyPair parRsa;        // chave RSA do servidor (assimétrica)
+    private final String chavePublicaB64; // enviada no HELLO
+    private final byte[] segredoRegistrador; // comparado no handshake
 
-    // nome -> endereço (mesmo mapa da versão original)
-    private final Map<String, String> tabela = new ConcurrentHashMap<>();
-    // idSessao -> sessão (chaves AES/HMAC de cada cliente)
-    private final Map<String, Sessao> sessoes = new ConcurrentHashMap<>();
+    private final Map<String, String> tabela = new ConcurrentHashMap<>(); // nome -> IP
+    private final Map<String, Sessao> sessoes = new ConcurrentHashMap<>(); // id -> sessão
 
     private final ExecutorService pool;
     private volatile boolean ativo = true;
@@ -51,10 +39,21 @@ public class DnsServer {
     public DnsServer(int porta, String segredoRegistrador) throws Exception {
         this.socket = new DatagramSocket(porta);
         this.segredoRegistrador = segredoRegistrador.getBytes(StandardCharsets.UTF_8);
-        this.parRsa = CriptoUtil.gerarParRsa();
+        this.parRsa = CriptoUtil.gerarParRsa(); // gera RSA-2048 na inicialização
         this.chavePublicaB64 = CriptoUtil.b64(parRsa.getPublic().getEncoded());
 
-        // Carga inicial exigida pela questão: servidor1 -> 192.168.0.10 ... servidor10 -> 192.168.0.100
+        // Carga inicial exigida: servidor
+        // "servidor1" → "192.168.0.10"
+        // "servidor2" → "192.168.0.20"
+        // "servidor3" → "192.168.0.30"
+        // "servidor4" → "192.168.0.40"
+        // "servidor5" → "192.168.0.50"
+        // "servidor6" → "192.168.0.60"
+        // "servidor7" → "192.168.0.70"
+        // "servidor8" → "192.168.0.80"
+        // "servidor9" → "192.168.0.90"
+        // "servidor10" → "192.168.0.100"
+
         for (int i = 1; i <= 10; i++) {
             tabela.put("servidor" + i, "192.168.0." + (i * 10));
         }
@@ -65,7 +64,6 @@ public class DnsServer {
         });
     }
 
-    // Laço principal: só recebe datagramas; o tratamento é feito pelo pool.
     public void executar() {
         Log.info("DNS", "Mini-DNS seguro escutando em UDP/" + socket.getLocalPort()
                 + " | RSA-2048 gerado (SHA-256: " + CriptoUtil.impressaoDigital(parRsa.getPublic()) + ")");
@@ -79,7 +77,7 @@ public class DnsServer {
                 }
                 break;
             }
-            pool.execute(() -> tratar(pacote));
+            pool.execute(() -> tratar(pacote)); // cada pacote em uma thread
         }
     }
 
@@ -88,8 +86,7 @@ public class DnsServer {
         socket.close();
     }
 
-    // Despacha pelo "tipo" do datagrama. Qualquer exceção inesperada é capturada
-    // aqui: um pacote ruim nunca derruba o servidor.
+        // Despacha: HELLO -> handshake; KEYEX -> handshake; DATA -> mensagem cifrada
     private void tratar(DatagramPacket pacote) {
         try {
             String texto = new String(pacote.getData(), pacote.getOffset(), pacote.getLength(),
@@ -103,31 +100,37 @@ public class DnsServer {
             } else if (texto.startsWith("DATA|")) {
                 tratarDados(texto, remetente);
             } else {
+                // Pacote em texto claro ou com formato desconhecido: descarta.
+                // Isso cobre o Caso 3 (mensagem sem cifra/HMAC não é processada).
                 Log.info("DNS", "Datagrama desconhecido/nao cifrado de " + remetente + " DESCARTADO");
             }
         } catch (RuntimeException e) {
+            // Defesa em profundidade: erro inesperado não derruba o servidor
             Log.info("DNS", "Erro inesperado ao tratar pacote (descartado): " + e);
         }
     }
 
-    // ------------------------------------------------------------------
-    // Handshake
-    // ------------------------------------------------------------------
+    // HANDSHAKE 
 
+    // Etapa 1: responde ao HELLO com a chave pública RSA
     private void tratarHello(SocketAddress remetente) {
         Log.info("DNS", "HANDSHAKE <- HELLO de " + remetente + " | enviando chave publica RSA");
         enviarBruto("PUBKEY|" + chavePublicaB64, remetente);
     }
 
+    // Etapa 2: decifra o blob KEYEX com a chave privada RSA.
+    // O blob contém: AES(32) + HMAC(32) + idSessao(8) + "papel:nome:segredo".
+    // Valida papel, nome e segredo (só REGISTRADOR precisa de segredo correto).
     private void tratarKeyex(String texto, SocketAddress remetente) {
         try {
             String[] p = texto.split("\\|", -1);
             if (p.length != 2) {
                 throw new IllegalArgumentException("formato");
             }
-            // Só a chave PRIVADA do servidor consegue abrir este bloco.
+
+            // Decifra com RSA-OAEP só o servidor tem a chave privada
             byte[] blob = CriptoUtil.rsaDecifrar(parRsa.getPrivate(), CriptoUtil.deb64(p[1]));
-            if (blob.length < 73) {
+            if (blob.length < 73) { // 32 AES + 32 MAC + 8 id + 1 separador mínimo
                 throw new IllegalArgumentException("bloco curto");
             }
             byte[] aes = Arrays.copyOfRange(blob, 0, 32);
@@ -141,43 +144,45 @@ public class DnsServer {
             String nome = extra[1];
             String segredo = extra[2];
 
+            // Valida papel e nome do cliente
             boolean papelValido = papel.equals(Protocolo.PAPEL_REQUISITANTE) || papel.equals(Protocolo.PAPEL_REGISTRADOR);
             if (!papelValido || !NOME_CLIENTE.matcher(nome).matches()) {
                 throw new IllegalArgumentException("papel/nome invalido");
             }
 
-            // Autorização: só quem conhece o segredo pode agir como REGISTRADOR.
-            // Simplificado: descarta o KEYEX sem responder nada. O cliente vai
-            // cair no timeout do handshake e reportar erro.
+            // Autorização: REGISTRADOR precisa apresentar o segredo correto.
+            // Comparação em TEMPO CONSTANTE (CriptoUtil.iguais) evita timing attack.
             if (papel.equals(Protocolo.PAPEL_REGISTRADOR)
                     && !CriptoUtil.iguais(segredo.getBytes(StandardCharsets.UTF_8), segredoRegistrador)) {
                 Log.info("DNS", "HANDSHAKE: " + nome + " pediu papel REGISTRADOR com segredo INCORRETO -> DESCARTADO");
                 return;
             }
+            // Limite de sessões mitigação básica de DoS
             if (sessoes.size() >= MAX_SESSOES) {
                 Log.info("DNS", "HANDSHAKE recusado: limite de sessoes atingido");
                 return;
             }
             Sessao sessao = new Sessao(id, aes, mac, papel, nome, remetente);
-            // putIfAbsent: um KEYEX repetido não cria sessão duplicada.
+            // putIfAbsent: se o id já existe (KEYEX repetido), descarta
             if (sessoes.putIfAbsent(id, sessao) != null) {
                 Log.info("DNS", "HANDSHAKE: KEYEX repetido (idSessao ja existe) DESCARTADO");
                 return;
             }
             Log.info("DNS", "HANDSHAKE <- KEYEX de " + remetente + ": chaves AES/HMAC decifradas com a chave privada RSA | "
                     + sessao.rotulo() + " criada (papel " + papel + ")");
+            // Etapa 3: confirma com KEYOK cifrado na sessão recém-criada
             enviar(sessao, "KEYOK");
 
-        } catch (Exception e) { // RSA inválido, Base64 ruim, campos faltando...
+        } catch (Exception e) { // qualquer falha criptográfica/format invalida o KEYEX
             Log.info("DNS", "HANDSHAKE: KEYEX invalido de " + remetente + " DESCARTADO ("
                     + e.getClass().getSimpleName() + ")");
         }
     }
 
-    // ------------------------------------------------------------------
-    // Mensagens de aplicação (cifradas)
-    // ------------------------------------------------------------------
+    // MENSAGENS CIFRADA 
 
+    // Recebe um DATA|..., acha a sessão pelo id, valida HMAC e decifra.
+    // Se a sessão não existe ou o HMAC falha, DESCARTA sem processar (Caso 3).
     private void tratarDados(String texto, SocketAddress remetente) {
         String id = Sessao.extrairId(texto);
         Sessao sessao = id == null ? null : sessoes.get(id);
@@ -188,25 +193,28 @@ public class DnsServer {
 
         String claro;
         try {
-            claro = sessao.abrir(texto); // valida HMAC, depois decifra
+            claro = sessao.abrir(texto); // valida HMAC (tempo constante) e decifra
         } catch (FalhaIntegridadeException e) {
-            // Exigência do Caso 3: descarta sem processar e registra no log.
+            //  Caso 3 do PDF: HMAC corrompido -> descarta e registra falha 
             Log.info("DNS", "FALHA DE INTEGRIDADE [" + sessao.rotulo() + "] de " + remetente + ": "
                     + e.getMessage() + " -> pacote UDP DESCARTADO sem processar");
             return;
         }
 
-        sessao.endereco = remetente; // pacote autenticado: atualiza para onde enviar NOTIFY
+        // UDP é sem conexão: aprende/atualiza o endereço atual do cliente
+        // necessário para o servidor saber para onde enviar NOTIFY depois
+        sessao.endereco = remetente;
         Log.info("DNS", "RECEBIDO [" + sessao.rotulo() + "] HMAC=OK " + Sessao.resumo(texto)
                 + " | claro=\"" + claro + "\"");
         processar(sessao, claro);
     }
 
+    // Interpreta o comando em texto claro já validado/decifrado
     private void processar(Sessao s, String claro) {
         String[] t = claro.trim().split("\\s+");
         switch (t[0].toUpperCase()) {
             case "REGISTER":
-                s.notificar = true; // passa a receber NOTIFY cifrado
+                s.notificar = true; // passa a receber NOTIFY em updates
                 enviar(s, "REGISTRADO");
                 break;
 
@@ -228,6 +236,7 @@ public class DnsServer {
         }
     }
 
+    // Resolução de nome: RESOLVE <nome> -> RESOLVIDO <nome> <ip>
     private void resolver(Sessao s, String[] t) {
         if (t.length != 2) {
             rejeitar(s, "REQUISICAO_INVALIDA");
@@ -240,15 +249,16 @@ public class DnsServer {
         }
         String ip = tabela.get(nome);
         if (ip == null) {
+            // Caso 3a: nome inexistente (ex.: servidor99)
             rejeitar(s, "NAO_ENCONTRADO " + nome);
             return;
         }
         enviar(s, "RESOLVIDO " + nome + " " + ip);
     }
 
-    // Binding dinâmico: valida, atualiza a tabela e propaga NOTIFY CIFRADO,
-    // cada um com as chaves da sessão do destinatário.
+    // Atualização de IP (binding dinâmico) + NOTIFY cifrado para requisitantes
     private void atualizar(Sessao s, String[] t) {
+        // Autorização: só o REGISTRADOR pode atualizar
         if (!s.papel.equals(Protocolo.PAPEL_REGISTRADOR)) {
             Log.info("DNS", "UPDATE negado: [" + s.rotulo() + "] nao e REGISTRADOR");
             rejeitar(s, "NAO_AUTORIZADO");
@@ -273,10 +283,12 @@ public class DnsServer {
             return;
         }
 
+        // Atualiza o mapa (put retorna o valor antigo para o log)
         String antigo = tabela.put(nome, novoIp);
         Log.info("DNS", "ATUALIZADO " + nome + ": " + antigo + " -> " + novoIp);
         enviar(s, "ATUALIZADO " + nome + " " + novoIp);
 
+        // BINDING DINÂMICO: propaga NOTIFY cifrado a todos os registrados 
         int total = 0;
         for (Sessao dest : sessoes.values()) {
             if (dest.notificar) {
@@ -286,31 +298,30 @@ public class DnsServer {
         Log.info("DNS", "Propagando NOTIFY cifrado para " + total + " requisitante(s) registrado(s)");
         for (Sessao dest : sessoes.values()) {
             if (dest.notificar) {
-                enviar(dest, "NOTIFY " + nome + " " + novoIp);
+                enviar(dest, "NOTIFY " + nome + " " + novoIp); // cada NOTIFY é cifrado na sessão do cliente
             }
         }
     }
 
-    // Entrada inválida: imprime a mensagem exigida no log e responde ERRO cifrado.
+    // Rejeita uma requisição inválida: loga a mensagem padronizada e responde ERRO <motivo>
     private void rejeitar(Sessao s, String motivo) {
         Log.info("DNS", Protocolo.MSG_ERRO_ENTRADA + " [" + s.rotulo() + " | motivo: " + motivo + "]");
         enviar(s, "ERRO " + motivo);
     }
 
-    // ------------------------------------------------------------------
-    // Envio
-    // ------------------------------------------------------------------
 
+    // Envia um texto claro cifrado na sessão (empacota com AES+HMAC)
     private void enviar(Sessao s, String claro) {
         SocketAddress destino = s.endereco;
         if (destino == null) {
-            return;
+            return; // sessão ainda sem endereço conhecido
         }
         String pacote = s.empacotar(claro);
         Log.info("DNS", "ENVIANDO [" + s.rotulo() + "] " + Sessao.resumo(pacote) + " | claro=\"" + claro + "\"");
         enviarBruto(pacote, destino);
     }
 
+    // Envia bytes crus via UDP usado no PUBKEY e nos pacotes já cifrados
     private void enviarBruto(String texto, SocketAddress destino) {
         byte[] dados = texto.getBytes(StandardCharsets.UTF_8);
         try {
@@ -320,7 +331,7 @@ public class DnsServer {
         }
     }
 
-    // java DnsServer [porta] [segredoDoRegistrador]
+    // Permite rodar o DNS como processo independente 
     public static void main(String[] args) throws Exception {
         int porta = args.length > 0 ? Integer.parseInt(args[0]) : PORTA_PADRAO;
         String segredo = args.length > 1 ? args[1] : SEGREDO_PADRAO;

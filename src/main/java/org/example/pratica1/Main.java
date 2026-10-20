@@ -2,79 +2,57 @@ package org.example.pratica1;
 
 import java.util.Map;
 
-// QUESTÃO 1 (Segurança) - Orquestrador dos testes.
-//
-// Sobe um DnsServer seguro em uma thread daemon e executa os 3 casos do
-// enunciado:
-//
-//   CASO 1: Cliente 1 consulta "servidor1" e recebe 192.168.0.10 após
-//           handshake RSA + validação de HMAC.
-//   CASO 2: Registrador atualiza "servidor1" para 192.168.0.111. O DNS
-//           valida o HMAC, atualiza o mapa e envia NOTIFY cifrado para
-//           C1, C2 e C3. Todos validam HMAC e atualizam o cache local.
-//   CASO 3: C1 envia nome inexistente (servidor99) -> DNS responde ERRO
-//           e o cliente imprime "Erro na entrada de dados. Tente outra vez!".
-//           C1 também envia um pacote com HMAC adulterado -> DNS descarta
-//           e registra falha de integridade no log.
+// Orquestrador de demonstração: sobe o DNS em thread daemon e executa os três casos de teste 
 public class Main {
 
     public static void main(String[] args) throws Exception {
         int porta = DnsServer.PORTA_PADRAO;
 
-        // 1) Sobe o servidor seguro (RSA-2048 gerado no construtor).
+        // Sobe o DNS na mesma JVM só para a demo, em produção seria processo separado, e cada classe tem seu main() para isso
         DnsServer dns = new DnsServer(porta, DnsServer.SEGREDO_PADRAO);
         Thread t = new Thread(dns::executar, "dns");
         t.setDaemon(true);
         t.start();
         pausa(300);
 
-        // ------------------------------------------------------------------
-        // CASO 1 - Consulta de nome com handshake e HMAC validado
-        // ------------------------------------------------------------------
+        // CASO 1: Cliente 1 consulta servidor1 com handshake RSA + HMAC
         titulo("CASO 1 - Cliente 1 consulta 'servidor1' (handshake RSA + HMAC)");
         ClienteRequisitante c1 = new ClienteRequisitante("Cliente1", "localhost", porta);
         ClienteRequisitante c2 = new ClienteRequisitante("Cliente2", "localhost", porta);
         ClienteRequisitante c3 = new ClienteRequisitante("Cliente3", "localhost", porta);
-        pausa(300);
+        pausa(300); // espera os 3 handshakes + REGISTER
 
         c1.resolver("servidor1");
         pausa(600);
 
-        // ------------------------------------------------------------------
-        // CASO 2 - Binding dinâmico + notificação broadcast cifrada
-        // ------------------------------------------------------------------
+        // CASO 2: Registrador atualiza servidor1 -> NOTIFY cifrado para C1/C2/C3
         titulo("CASO 2 - Registrador atualiza 'servidor1' para 192.168.0.111");
         ClienteRegistrador reg = new ClienteRegistrador("localhost", porta, DnsServer.SEGREDO_PADRAO);
         Log.info("Main", "Registrador: " + reg.atualizar("servidor1", "192.168.0.111"));
-        pausa(600); // espera os NOTIFY cifrados chegarem a C1, C2 e C3
+        pausa(600);
 
+        // Mostra o cache dos 3 — prova que receberam e validaram o NOTIFY
         titulo("CASO 2 - Cache dos 3 requisitantes apos NOTIFY cifrado");
         mostrar("Cliente1", c1);
         mostrar("Cliente2", c2);
         mostrar("Cliente3", c3);
 
-        // ------------------------------------------------------------------
-        // CASO 3a - Entrada inválida (nome inexistente)
-        // ------------------------------------------------------------------
+        // CASO 3a: nome inexistente -> erro de entrada
         titulo("CASO 3a - Cliente 1 consulta 'servidor99' (nome inexistente)");
         c1.resolver("servidor99");
         pausa(500);
 
-        // ------------------------------------------------------------------
-        // CASO 3b - HMAC adulterado (deve ser descartado sem processar)
-        // ------------------------------------------------------------------
+        // CASO 3b: HMAC adulterado -> DNS descarta sem processar e loga falha
         titulo("CASO 3b - Cliente 1 envia RESOLVE com HMAC adulterado");
-        c1.adulterarHmac("servidor1"); // método público do ClienteRequisitante
+        c1.adulterarHmac("servidor1");
         pausa(500);
 
-        // ------------------------------------------------------------------
-        // Confirmação final: o DNS guardou o valor novo?
-        // ------------------------------------------------------------------
+        // Confirmação: nova consulta mostra que o mapa do DNS continua íntegro
         titulo("Confirmacao final - nova consulta a 'servidor1'");
         c3.resolver("servidor1");
         pausa(400);
 
-        // Encerramento: fecha os sockets dos clientes e para o servidor.
+        // Encerra tudo
         c1.fechar();
         c2.fechar();
         c3.fechar();

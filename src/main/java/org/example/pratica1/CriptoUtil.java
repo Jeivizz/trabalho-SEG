@@ -17,43 +17,31 @@ import java.security.SecureRandom;
 import java.security.spec.MGF1ParameterSpec;
 import java.util.Base64;
 
-// Funções criptográficas usadas pelo projeto. Só usa a biblioteca padrão do
-// Java (JCA/JCE): nada de dependências externas.
-//
-// CRIPTOGRAFIA HÍBRIDA:
-//   - ASSIMÉTRICA (RSA-2048 + OAEP/SHA-256): usada UMA vez, no handshake, só
-//     para transportar com segurança as chaves simétricas até o servidor.
-//     É lenta e limitada em tamanho, por isso não cifra as mensagens.
-//   - SIMÉTRICA (AES-256-CBC): cifra todas as mensagens depois do handshake
-//     (rápida e sem limite prático de tamanho). Garante CONFIDENCIALIDADE.
-//   - HMAC-SHA256 (chave própria, diferente da AES): garante INTEGRIDADE e
-//     AUTENTICIDADE. Quem não tem a chave não consegue gerar um HMAC válido.
 public final class CriptoUtil {
 
-    public static final int TAM_DATAGRAMA = 4096; // buffer de recepção UDP
-    public static final int TAM_CHAVE_AES = 32;   // 256 bits
-    public static final int TAM_CHAVE_MAC = 32;   // 256 bits
-    public static final int TAM_IV = 16;          // bloco do AES
+    // Tamanhos fixos do protocolo
+    public static final int TAM_DATAGRAMA = 4096; // buffer UDP (RSA-2048 cabe)
+    public static final int TAM_CHAVE_AES = 32;   // AES-256
+    public static final int TAM_CHAVE_MAC = 32;   // HMAC-SHA256
+    public static final int TAM_IV = 16;          // IV do CBC
 
     private static final SecureRandom RNG = new SecureRandom();
 
-    // OAEP com SHA-256 também no MGF1 (por padrão o Java usaria SHA-1 no MGF1).
-    // Servidor e clientes usam exatamente a mesma especificação.
+    // Parâmetros do RSA-OAEP com SHA-256 
     private static final OAEPParameterSpec OAEP = new OAEPParameterSpec(
             "SHA-256", "MGF1", MGF1ParameterSpec.SHA256, PSource.PSpecified.DEFAULT);
 
     private CriptoUtil() {
     }
 
-    // ---------------- RSA ----------------
+    // ASSIMÉTRICO (RSA) — usado só no handshake 
 
     public static KeyPair gerarParRsa() throws GeneralSecurityException {
         KeyPairGenerator g = KeyPairGenerator.getInstance("RSA");
-        g.initialize(2048);
+        g.initialize(2048); // 2048 bits
         return g.generateKeyPair();
     }
 
-    // Com RSA-2048 + OAEP-SHA256 cabem no máximo 190 bytes por operação.
     public static byte[] rsaCifrar(PublicKey chave, byte[] dados) throws GeneralSecurityException {
         Cipher c = Cipher.getInstance("RSA/ECB/OAEPPadding");
         c.init(Cipher.ENCRYPT_MODE, chave, OAEP);
@@ -66,10 +54,8 @@ public final class CriptoUtil {
         return c.doFinal(dados);
     }
 
-    // ---------------- AES ----------------
+    // SIMÉTRICO (AES-256/CBC) — usado em todas as mensagens 
 
-    // IV (vetor de inicialização) ALEATÓRIO e diferente a cada mensagem:
-    // assim a mesma mensagem cifrada duas vezes gera textos cifrados distintos.
     public static byte[] aesCifrar(byte[] chave, byte[] iv, byte[] claro) throws GeneralSecurityException {
         Cipher c = Cipher.getInstance("AES/CBC/PKCS5Padding");
         c.init(Cipher.ENCRYPT_MODE, new SecretKeySpec(chave, "AES"), new IvParameterSpec(iv));
@@ -82,7 +68,7 @@ public final class CriptoUtil {
         return c.doFinal(cifrado);
     }
 
-    // ---------------- HMAC ----------------
+    //  INTEGRIDADE (HMAC-SHA256) — garante autenticidade e detecção de adulteração 
 
     public static byte[] hmac(byte[] chave, byte[] dados) throws GeneralSecurityException {
         Mac m = Mac.getInstance("HmacSHA256");
@@ -90,17 +76,15 @@ public final class CriptoUtil {
         return m.doFinal(dados);
     }
 
-    // Comparação em TEMPO CONSTANTE: um equals() comum retorna ao achar o primeiro
-    // byte diferente, e o tempo gasto poderia vazar informação sobre o HMAC correto.
+    // Comparação em TEMPO CONSTANTE: evita timing attack
     public static boolean iguais(byte[] a, byte[] b) {
         return MessageDigest.isEqual(a, b);
     }
-
-    // ---------------- utilidades ----------------
+ 
 
     public static byte[] aleatorios(int n) {
         byte[] b = new byte[n];
-        RNG.nextBytes(b);
+        RNG.nextBytes(b); // SecureRandom, não Random
         return b;
     }
 
@@ -108,7 +92,6 @@ public final class CriptoUtil {
         return Base64.getEncoder().encodeToString(dados);
     }
 
-    // Lança IllegalArgumentException se não for Base64 válido.
     public static byte[] deb64(String texto) {
         return Base64.getDecoder().decode(texto);
     }
@@ -121,8 +104,8 @@ public final class CriptoUtil {
         return sb.toString();
     }
 
-    // "Impressão digital" da chave pública (SHA-256), para o usuário conferir
-    // por outro canal que a chave recebida é mesmo a do servidor.
+    // Impressão digital SHA-256 da chave pública mostra no log que o clientee
+    // recebeu a chave certa; ajuda a argumentar contra MITM
     public static String impressaoDigital(PublicKey chave) {
         try {
             byte[] h = MessageDigest.getInstance("SHA-256").digest(chave.getEncoded());
@@ -135,7 +118,7 @@ public final class CriptoUtil {
             }
             return sb.toString();
         } catch (NoSuchAlgorithmException e) {
-            throw new IllegalStateException(e); // SHA-256 sempre existe no Java
+            throw new IllegalStateException(e);
         }
     }
 
