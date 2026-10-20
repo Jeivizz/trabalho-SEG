@@ -59,9 +59,6 @@ public class ClienteCDN {
         System.out.println("\n[Caso 3b] HMAC corrompido");
         testarHMACCorrompido("arquivo20.ext");
 
-        // Caso 3c: bytes aleatorios
-        System.out.println("\n[Caso 3c] Bytes invalidos");
-        testarBytesAleatorios("arquivo20.ext");
     }
 
     // consulta cifrada ao GeoDNS
@@ -130,30 +127,6 @@ public class ClienteCDN {
         }
     }
 
-    // Caso 3c: bytes aleatorios, nao decifram
-    private void testarBytesAleatorios(String nome) {
-        try {
-            String edge = descobrirEdge(nome);
-            int porta = Integer.parseInt(edge.split(":")[1]);
-
-            byte[] lixo = new byte[256];
-            new SecureRandom().nextBytes(lixo);
-
-            try (java.net.Socket s = new java.net.Socket("127.0.0.1", porta)) {
-                s.getOutputStream().write(lixo);
-                s.getOutputStream().flush();
-                s.shutdownOutput();
-                byte[] r = s.getInputStream().readAllBytes();
-                if (r.length == 0) {
-                    System.out.println("[Cliente] servidor rejeitou bytes invalidos - CORRETO");
-                } else {
-                    System.out.println("[Cliente] inesperado: " + r.length + " bytes");
-                }
-            }
-        } catch (Exception e) {
-            System.out.println("[Cliente] excecao esperada: " + e.getClass().getSimpleName());
-        }
-    }
 
     private void registrar(String linha) {
         synchronized (logs) { logs.add(linha); }

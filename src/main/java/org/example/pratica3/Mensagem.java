@@ -4,6 +4,7 @@ import java.io.Serializable;
 import java.util.ArrayList;
 import java.util.UUID;
 
+// Serializable permite enviar o objeto inteiro via ObjectOutputStream no socket TCP.
 public class Mensagem implements Serializable {
     private static final long serialVersionUID = 1L;
 
