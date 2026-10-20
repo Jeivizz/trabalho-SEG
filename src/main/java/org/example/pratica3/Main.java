@@ -2,52 +2,68 @@ package org.example.pratica3;
 
 import java.util.concurrent.TimeUnit;
 
-/**
- * QUESTÃO 3 - Orquestrador dos testes.
- *
- * Sobe os 6 nós (P0..P5) em threads de uma mesma JVM, cada um com seu
- * ServerSocket TCP em localhost, e executa os casos de teste do enunciado.
- */
-public class Main {
+// Orquestrador de demonstração dos três casos de teste 
+//   Caso 1: busca válida com criptografia salto a salto (P0 -> P1 -> P2 -> P3)
+//   Caso 2: entradas inválidas (P1 arquivo99.ext, P4 arquivoABC.ext)
+//   Caso 3: pacote adulterado de P4 para P5 (falha de HMAC)
 
+public class Main {
     public static void main(String[] args) throws Exception {
         NoAnel[] nos = new NoAnel[NoAnel.TOTAL_NOS];
-        for (int i = 0; i < nos.length; i++) {
-            nos[i] = new NoAnel(i);
-            nos[i].iniciar();
-        }
-        Thread.sleep(300);
+        int iniciados = 0; // contador de nós efetivamente iniciados (para o finally)
 
-        titulo("CASO 1 - Busca válida: origem P0, arquivo35.ext (esperado: P0->P1->P2->P3)");
-        executar(nos[0], "arquivo35.ext");
+        try {
+            // Sobe os 6 nós P0..P5, cada um na sua porta (7000..7005) 
+            for (int i = 0; i < nos.length; i++) {
+                nos[i] = new NoAnel(i);
+                nos[i].iniciar();
+                iniciados++;
+            }
+            Thread.sleep(500); // dá tempo dos ServerSockets abrirem
 
-        titulo("CASO 2a - Entrada inválida: origem P1, arquivo99.ext (fora de 1-60)");
-        executar(nos[1], "arquivo99.ext");
+            // CASO 1: busca válida — P0 procura arquivo35.ext
+            // Esperado: P0 -> P1 -> P2 -> P3, com criptografia salto a salto
+            titulo("CASO 1 - Busca valida: P0 procura arquivo35.ext");
+            executar(nos[0], "arquivo35.ext");
 
-        titulo("CASO 2b - Entrada inválida: origem P4, arquivoABC.ext");
-        executar(nos[4], "arquivoABC.ext");
+            // CASO 2a: entrada inválida — número fora de 1..60
+            // Rejeitada ANTES de abrir conexão nenhum pacote é propagado
+            titulo("CASO 2a - Entrada invalida: P1 procura arquivo99.ext");
+            executar(nos[1], "arquivo99.ext");
 
-        titulo("LOG ARMAZENADO de P3 (cada processo guarda e imprime suas mensagens)");
-        nos[3].imprimirHistorico();
+            // CASO 2b: entrada inválida — formato errado não casa com a regex
+            titulo("CASO 2b - Entrada invalida: P4 procura arquivoABC.ext");
+            executar(nos[4], "arquivoABC.ext");
 
-        for (NoAnel n : nos) {
-            n.parar();
+            // CASO 3: pacote adulterado — P4 envia para P5 um PacoteSeguro
+            // cujo conteúdo cifrado teve 1 bit alterado após o HMAC
+            // P5 deve detectar HMAC inválido, descartar e NÃO repassar
+            titulo("CASO 3 - Pacote adulterado: P4 envia para P5");
+            nos[4].testarPacoteAdulteradoParaSucessor();
+            Thread.sleep(700); // espera o P5 processar e logar a falha
+
+        } finally {
+            // Garante o encerramento mesmo se algum caso de teste lançar exceção
+            // Só para os nós iniciados
+            for (int i = 0; i < iniciados; i++) nos[i].parar();
         }
     }
 
+    // Executa uma busca e espera até 8s pelo resultado
+    // Se a entrada for inválida, buscar() retorna null e nada é enviado.
     private static void executar(NoAnel no, String entrada) throws InterruptedException {
-        var f = no.buscar(entrada);
-        if (f != null) {
+        var futuro = no.buscar(entrada);
+        if (futuro != null) {
             try {
-                f.get(5, TimeUnit.SECONDS);
+                futuro.get(8, TimeUnit.SECONDS);
             } catch (Exception e) {
                 System.out.println("Busca sem resposta: " + e.getMessage());
             }
         }
-        Thread.sleep(300);
+        Thread.sleep(500); // pausa didática para o console ficar legível
     }
 
-    private static void titulo(String s) {
-        System.out.println("\n===== " + s + " =====");
+    private static void titulo(String texto) {
+        System.out.println("\n===== " + texto + " =====");
     }
 }
