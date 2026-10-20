@@ -219,7 +219,7 @@ public class NoAnel {
     // Envia Mensagem para outro nó via TCP, usando criptografia híbrida SALTO A SALTO.
     // O parâmetro 'adulterar' é um GANCHO DE TESTE (Caso 3): altera 1 bit do cifrado.
     private boolean enviar(Mensagem m, int destino, boolean adulterar) {
-        log("ENVIOU " + m.tipo + "[" + m.id + "] '" + m.arquivo + "' para P" + destino + " (RSA + AES + HMAC)");
+        log("ENVIOU " + m.tipo + "[" + m.id + "] '" + m.arquivo + "' para P" + destino + " (AES + HMAC + RSA)");
         try (Socket socket = new Socket(InetAddress.getLoopbackAddress(), PORTA_BASE + destino);
              ObjectInputStream in = new ObjectInputStream(socket.getInputStream());
              ObjectOutputStream out = new ObjectOutputStream(socket.getOutputStream())) {
