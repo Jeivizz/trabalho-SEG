@@ -257,7 +257,7 @@ public class NoAnel {
     }
 
     public void imprimirHistorico() {
-        System.out.println("---- Log de P" + id + " (" + historico.size() + " entradas) ----");
+        System.out.println("<><><> Log de P" + id + " (" + historico.size() + " entradas) <><><>");
         synchronized (historico) { for (String linha : historico) System.out.println(linha); }
     }
 }
