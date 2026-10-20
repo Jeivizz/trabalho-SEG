@@ -2,95 +2,79 @@ package org.example.pratica1;
 
 import java.util.Map;
 
-// QUESTÃO 1 - Orquestrador dos testes.
+// QUESTÃO 1 (Segurança) - Orquestrador dos testes.
 //
-// Sobe um DnsServer em uma thread daemon e executa uma sequência de
-// operações que cobre TODOS os requisitos do enunciado:
+// Sobe um DnsServer seguro em uma thread daemon e executa os 3 casos do
+// enunciado:
 //
-//   PASSO 1: três clientes requisitantes consultam nomes (inclui um
-//            nome inexistente para exercitar o caminho de erro).
-//   PASSO 2: um cliente registrador atualiza servidor1, servidor4 e
-//            servidor9 (binding dinâmico). O servidor propaga NOTIFY.
-//   PASSO 3: o registrador envia um IP inválido e um nome inexistente,
-//            exercitando as validações do servidor.
-//   PASSO 4: imprime o cache de cada requisitante após as notificações,
-//            comprovando que o binding dinâmico chegou aos clientes.
-//   PASSO 5: nova consulta confirma que o servidor persistiu a mudança.
-//
-// Este roteiro é a "demonstração" do trabalho no lugar de um vídeo:
-// basta rodar Main e observar o console.w
+//   CASO 1: Cliente 1 consulta "servidor1" e recebe 192.168.0.10 após
+//           handshake RSA + validação de HMAC.
+//   CASO 2: Registrador atualiza "servidor1" para 192.168.0.111. O DNS
+//           valida o HMAC, atualiza o mapa e envia NOTIFY cifrado para
+//           C1, C2 e C3. Todos validam HMAC e atualizam o cache local.
+//   CASO 3: C1 envia nome inexistente (servidor99) -> DNS responde ERRO
+//           e o cliente imprime "Erro na entrada de dados. Tente outra vez!".
+//           C1 também envia um pacote com HMAC adulterado -> DNS descarta
+//           e registra falha de integridade no log.
 public class Main {
 
     public static void main(String[] args) throws Exception {
         int porta = DnsServer.PORTA_PADRAO;
 
-        // 1) servidor
-        // Sobe o servidor em uma thread daemon para que possamos continuar
-        // executando os clientes na thread principal.
-        DnsServer dns = new DnsServer(porta);
+        // 1) Sobe o servidor seguro (RSA-2048 gerado no construtor).
+        DnsServer dns = new DnsServer(porta, DnsServer.SEGREDO_PADRAO);
         Thread t = new Thread(dns::executar, "dns");
         t.setDaemon(true);
         t.start();
         pausa(300);
 
-        // tres requisitantes
-        // PASSO 1 - Três clientes requisitantes fazem consultas iniciais.
-        // Cada ClienteRequisitante se registra automaticamente no construtor
-        // (envia REGISTER), então já estão aptos a receber NOTIFY.
-        titulo("PASSO 1 - Consultas iniciais dos 3 requisitantes");
+        // ------------------------------------------------------------------
+        // CASO 1 - Consulta de nome com handshake e HMAC validado
+        // ------------------------------------------------------------------
+        titulo("CASO 1 - Cliente 1 consulta 'servidor1' (handshake RSA + HMAC)");
         ClienteRequisitante c1 = new ClienteRequisitante("Cliente1", "localhost", porta);
         ClienteRequisitante c2 = new ClienteRequisitante("Cliente2", "localhost", porta);
         ClienteRequisitante c3 = new ClienteRequisitante("Cliente3", "localhost", porta);
         pausa(300);
 
         c1.resolver("servidor1");
-        c1.resolver("servidor4");
-        c2.resolver("servidor9");
-        c2.resolver("servidor1");
-        c3.resolver("servidor4");
-        c3.resolver("servidor9");
-        c3.resolver("servidor10");
-        c1.resolver("servidor99"); // nome inexistente deve gerar erro tratado
-        pausa(600); // espera as respostas chegarem nas threads ouvintes
-
-        // PASSO 2 - Binding dinâmico: o registrador altera três nomes.
-        // O servidor responde ATUALIZADO ao registrador e propaga NOTIFY
-        // a todos os clientes que enviaram REGISTER (c1, c2 e c3).
-        titulo("PASSO 2 - Registrador atualiza servidor1, servidor4 e servidor9");
-        ClienteRegistrador reg = new ClienteRegistrador("localhost", porta);
-        System.out.println("  [Registrador] " + reg.atualizar("servidor1", "10.0.0.11"));
-        System.out.println("  [Registrador] " + reg.atualizar("servidor4", "10.0.0.44"));
-        System.out.println("  [Registrador] " + reg.atualizar("servidor9", "10.0.0.99"));
         pausa(600);
 
-        // PASSO 3 - Caminhos de erro do servidor:
-        //   - IP fora do formato IPv4 (999.1.1.1)      -> ERRO IP_INVALIDO
-        //   - nome que não existe na tabela (servidor77) -> ERRO NAO_ENCONTRADO
-        titulo("PASSO 3 - Erros tratados pelo servidor");
-        System.out.println("  [Registrador] " + reg.atualizar("servidor1", "999.1.1.1"));
-        System.out.println("  [Registrador] " + reg.atualizar("servidor77", "10.0.0.7"));
-        pausa(400);
+        // ------------------------------------------------------------------
+        // CASO 2 - Binding dinâmico + notificação broadcast cifrada
+        // ------------------------------------------------------------------
+        titulo("CASO 2 - Registrador atualiza 'servidor1' para 192.168.0.111");
+        ClienteRegistrador reg = new ClienteRegistrador("localhost", porta, DnsServer.SEGREDO_PADRAO);
+        Log.info("Main", "Registrador: " + reg.atualizar("servidor1", "192.168.0.111"));
+        pausa(600); // espera os NOTIFY cifrados chegarem a C1, C2 e C3
 
-        // PASSO 4 - Comprovação do binding dinâmico: o cache de cada requisitante
-        // deve mostrar os NOVOS valores para servidor1, servidor4 e servidor9,
-        // sem que eles tenham refeito a consulta. Isso só é possível porque o
-        // servidor enviou NOTIFY e a thread ouvinte de cada cliente atualizou
-        // o cache local.
-        titulo("PASSO 4 - Cache de cada requisitante após as notificaçoes");
+        titulo("CASO 2 - Cache dos 3 requisitantes apos NOTIFY cifrado");
         mostrar("Cliente1", c1);
         mostrar("Cliente2", c2);
         mostrar("Cliente3", c3);
 
+        // ------------------------------------------------------------------
+        // CASO 3a - Entrada inválida (nome inexistente)
+        // ------------------------------------------------------------------
+        titulo("CASO 3a - Cliente 1 consulta 'servidor99' (nome inexistente)");
+        c1.resolver("servidor99");
+        pausa(500);
 
-        // PASSO 5 - Confirma que o servidor persistiu a mudança: uma nova
-        // consulta a servidor1 deve devolver 10.0.0.11 (valor atualizado).     
-        titulo("PASSO 5 - Nova consulta (confirma que o DNS guarda o valor novo)");
+        // ------------------------------------------------------------------
+        // CASO 3b - HMAC adulterado (deve ser descartado sem processar)
+        // ------------------------------------------------------------------
+        titulo("CASO 3b - Cliente 1 envia RESOLVE com HMAC adulterado");
+        c1.adulterarHmac("servidor1"); // método público do ClienteRequisitante
+        pausa(500);
+
+        // ------------------------------------------------------------------
+        // Confirmação final: o DNS guardou o valor novo?
+        // ------------------------------------------------------------------
+        titulo("Confirmacao final - nova consulta a 'servidor1'");
         c3.resolver("servidor1");
         pausa(400);
 
-
-        // Encerramento limpo: fechar os clientes (envia UNREGISTER) e parar
-        // o servidor (fecha o socket e interrompe o laço de recepção).
+        // Encerramento: fecha os sockets dos clientes e para o servidor.
         c1.fechar();
         c2.fechar();
         c3.fechar();
@@ -98,8 +82,6 @@ public class Main {
         dns.parar();
     }
 
-    // Imprime o cache de um ClienteRequisitante em ordem alfabética
-    // (copiaDoCache() devolve um TreeMap) para facilitar a leitura.
     private static void mostrar(String nome, ClienteRequisitante c) {
         System.out.print("  " + nome + ": ");
         for (Map.Entry<String, String> e : c.copiaDoCache().entrySet()) {
@@ -107,13 +89,12 @@ public class Main {
         }
         System.out.println();
     }
-    // Separador visual para organizar a saída do console por passo.
+
     private static void titulo(String s) {
         System.out.println("\n===== " + s + " =====");
     }
-    // Pequena pausa para dar tempo às threads de receberem datagramas.
+
     private static void pausa(long ms) throws InterruptedException {
         Thread.sleep(ms);
     }
 }
-

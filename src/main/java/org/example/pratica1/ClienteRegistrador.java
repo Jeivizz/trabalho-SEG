@@ -10,69 +10,79 @@ import java.net.InetSocketAddress;
 import java.net.SocketTimeoutException;
 import java.nio.charset.StandardCharsets;
 
-// QUESTÃO 1 - Cliente registrador.
+// QUESTÃO 1 (Segurança) - Cliente registrador.
 //
-// Simula um serviço que mudou de IP e "se registra de novo" (binding dinâmico).
-// Envia UPDATE <nome> <ip> e espera a confirmação com timeout, pois UDP não
-// garante entrega: se o datagrama ou a resposta se perder, o cliente não
-// fica bloqueado para sempre.
-//
-// Diferença em relação ao ClienteRequisitante:
-//   - NÃO mantém thread ouvinte nem cache: ele é a FONTE da mudança.
-//   - NÃO se registra para receber NOTIFY: ele é quem provoca os NOTIFY.
-//   - Usa setSoTimeout porque a única coisa que ele faz é enviar UPDATE e
-//     esperar uma confirmação pontual (ATUALIZADO ou ERRO).
+// Faz o handshake como REGISTRADOR e prova que tem permissão enviando o segredo
+// DENTRO do bloco cifrado com RSA (nunca em claro). Depois envia
+// "UPDATE <nome> <ip>" cifrado + HMAC e espera a confirmação com timeout.
 public class ClienteRegistrador {
 
-    // Tempo máximo que esperamos pela confirmação do servidor. Como UDP não
-    // garante entrega, sem esse timeout o cliente ficaria bloqueado para
-    // sempre caso a resposta se perdesse.
+    private static final String NOME = "Registrador";
     private static final int TIMEOUT_MS = 2000;
 
     private final DatagramSocket socket;
     private final InetSocketAddress servidor;
+    private final Sessao sessao;
 
-    public ClienteRegistrador(String host, int portaServidor) throws IOException {
-        this.socket = new DatagramSocket();
-        // Timeout na recepção: se a confirmação não chegar em TIMEOUT_MS,
-        // receive() lança SocketTimeoutException e devolvemos erro ao chamador.
-        this.socket.setSoTimeout(TIMEOUT_MS);
+    public ClienteRegistrador(String host, int portaServidor, String segredo) throws IOException {
+        DatagramSocket s = new DatagramSocket();
+        s.setSoTimeout(TIMEOUT_MS);
         this.servidor = new InetSocketAddress(InetAddress.getByName(host), portaServidor);
+        try {
+            this.sessao = Handshake.estabelecer(s, servidor, Protocolo.PAPEL_REGISTRADOR, NOME, segredo);
+        } catch (IOException e) {
+            s.close();
+            throw e;
+        }
+        this.socket = s;
     }
 
-    //Envia UPDATE <nome> <ip> e aguarda a confirmação do servidor.
-    //
-    //     Retorna:
-    //   - "ATUALIZADO <nome> <ip>" se o servidor aceitou a mudança;
-    //   - "ERRO <motivo>" se o servidor rejeitou (ex.: IP inválido, nome
-    //     inexistente);
-    //   - "ERRO TIMEOUT ..." se nenhuma resposta chegou dentro de TIMEOUT_MS.
-    //
-    // O chamador decide o que fazer com o resultado; esta classe não
-    // imprime diretamente para não misturar I/O com lógica.
     public String atualizar(String nome, String ip) throws IOException {
-        byte[] dados = ("UPDATE " + nome + " " + ip).getBytes(StandardCharsets.UTF_8);
+        String claro = "UPDATE " + nome + " " + ip;
+        String pacote = sessao.empacotar(claro);
+        Log.info(NOME, "ENVIANDO [" + sessao.rotulo() + "] " + Sessao.resumo(pacote) + " | claro=\"" + claro + "\"");
+        byte[] dados = pacote.getBytes(StandardCharsets.UTF_8);
         socket.send(new DatagramPacket(dados, dados.length, servidor));
 
-        DatagramPacket resposta = new DatagramPacket(new byte[1024], 1024);
-        try {
-            socket.receive(resposta);
-        } catch (SocketTimeoutException e) {
-            return "ERRO TIMEOUT (sem resposta do servidor em " + TIMEOUT_MS + " ms)";
+        while (true) {
+            DatagramPacket resposta = new DatagramPacket(new byte[CriptoUtil.TAM_DATAGRAMA], CriptoUtil.TAM_DATAGRAMA);
+            try {
+                socket.receive(resposta);
+            } catch (SocketTimeoutException e) {
+                return "ERRO TIMEOUT (sem resposta valida do servidor em " + TIMEOUT_MS + " ms)";
+            }
+            String texto = new String(resposta.getData(), 0, resposta.getLength(), StandardCharsets.UTF_8).trim();
+            if (!texto.startsWith("DATA|")) {
+                continue;
+            }
+            try {
+                String resp = sessao.abrir(texto);
+                Log.info(NOME, "RECEBIDO [" + sessao.rotulo() + "] HMAC=OK " + Sessao.resumo(texto)
+                        + " | claro=\"" + resp + "\"");
+                return resp;
+            } catch (FalhaIntegridadeException e) {
+                Log.info(NOME, "FALHA DE INTEGRIDADE: " + e.getMessage() + " -> pacote DESCARTADO");
+            }
         }
-        return new String(resposta.getData(), 0, resposta.getLength(), StandardCharsets.UTF_8).trim();
     }
 
     public void fechar() {
         socket.close();
     }
 
-    // Modo interativo: java ClienteRegistrador [host] [porta] 
     public static void main(String[] args) throws Exception {
         String host = args.length > 0 ? args[0] : "localhost";
         int porta = args.length > 1 ? Integer.parseInt(args[1]) : DnsServer.PORTA_PADRAO;
+        String segredo = args.length > 2 ? args[2] : DnsServer.SEGREDO_PADRAO;
 
-        ClienteRegistrador r = new ClienteRegistrador(host, porta);
+        ClienteRegistrador r;
+        try {
+            r = new ClienteRegistrador(host, porta, segredo);
+        } catch (IOException e) {
+            System.out.println("Nao foi possível estabelecer o canal seguro com o DNS: " + e.getMessage());
+            return;
+        }
+
         System.out.println("Comandos: atualizar <nome> <ip> | sair");
         BufferedReader in = new BufferedReader(new InputStreamReader(System.in));
         String linha;
@@ -83,9 +93,14 @@ public class ClienteRegistrador {
             }
             String[] t = linha.split("\\s+");
             if (t.length == 3 && t[0].equals("atualizar")) {
-                System.out.println("  [Registrador] " + r.atualizar(t[1], t[2]));
+                String resp = r.atualizar(t[1], t[2]);
+                if (Protocolo.ehErroDeEntrada(resp)) {
+                    Log.info(NOME, Protocolo.MSG_ERRO_ENTRADA + " (servidor: " + resp.substring(4).trim() + ")");
+                } else {
+                    Log.info(NOME, "Resultado: " + resp);
+                }
             } else if (!linha.isEmpty()) {
-                System.out.println("Comando inválido. Use: atualizar <nome> <ip> | sair");
+                System.out.println(Protocolo.MSG_ERRO_ENTRADA + " (use: atualizar <nome> <ip> | sair)");
             }
         }
         r.fechar();
