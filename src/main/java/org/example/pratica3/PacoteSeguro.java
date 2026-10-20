@@ -2,7 +2,7 @@ package org.example.pratica3;
 
 import java.io.Serializable;
 
-/** Envelope transmitido pela rede. O conteúdo e as chaves simétricas ficam protegidos. */
+
 public class PacoteSeguro implements Serializable {
     private static final long serialVersionUID = 1L;
 
@@ -21,11 +21,12 @@ public class PacoteSeguro implements Serializable {
         this.hmac = hmac;
     }
 
-    /** Retorna uma cópia adulterada para o teste de falha de integridade. */
+    // Retorna uma CÓPIA com 1 bit do último byte do cifrado alterado.
+    // O HMAC continua o original, então não vai bater
     public PacoteSeguro adulterar() {
         byte[] copia = conteudoCifrado.clone();
         if (copia.length > 0) {
-            copia[copia.length - 1] ^= 1;
+            copia[copia.length - 1] ^= 1; // XOR de 1 bit
         }
         return new PacoteSeguro(chaveAesCifrada, chaveHmacCifrada, iv, copia, hmac);
     }

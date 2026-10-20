@@ -4,19 +4,19 @@ import java.io.Serializable;
 import java.util.ArrayList;
 import java.util.UUID;
 
-/** Mensagem lógica da busca P2P. Ela é serializada e criptografada antes de ir à rede. */
 public class Mensagem implements Serializable {
     private static final long serialVersionUID = 1L;
 
+    // BUSCA = ida no anel; RESPOSTA = volta até a origem
     public enum Tipo { BUSCA, RESPOSTA }
 
     public final Tipo tipo;
-    public final String id;
-    public final int origem;
-    public final String arquivo;
-    public int responsavel = -1;
+    public final String id;        // UUID curto: correlaciona BUSCA com RESPOSTA
+    public final int origem;       // nó que iniciou a busca
+    public final String arquivo;   // nome do arquivo procurado
+    public int responsavel = -1;   // quem possui o arquivo (preenchido na RESPOSTA)
     public boolean encontrado = false;
-    public final ArrayList<Integer> caminho = new ArrayList<>();
+    public final ArrayList<Integer> caminho = new ArrayList<>(); // rota percorrida
 
     private Mensagem(Tipo tipo, String id, int origem, String arquivo) {
         this.tipo = tipo;
@@ -25,11 +25,14 @@ public class Mensagem implements Serializable {
         this.arquivo = arquivo;
     }
 
+    // Factory de BUSCA com id único 8 primeiros chars do UUID
     public static Mensagem busca(int origem, String arquivo) {
         String id = UUID.randomUUID().toString().substring(0, 8);
         return new Mensagem(Tipo.BUSCA, id, origem, arquivo);
     }
 
+    // Converte esta BUSCA em RESPOSTA mantendo o mesmo id
+    // e copiando o caminho percorrido para o log final
     public Mensagem comoResposta(int responsavel, boolean encontrado) {
         Mensagem resposta = new Mensagem(Tipo.RESPOSTA, id, origem, arquivo);
         resposta.responsavel = responsavel;
@@ -38,6 +41,7 @@ public class Mensagem implements Serializable {
         return resposta;
     }
 
+    // Formata o caminho como "P0 -> P1 -> P2 -> P3"
     public String caminhoTexto() {
         StringBuilder sb = new StringBuilder();
         for (int i = 0; i < caminho.size(); i++) {
